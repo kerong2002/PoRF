@@ -1,249 +1,144 @@
 import numpy as np
-from path import Path
 import os
-import cv2
-from scipy.spatial.transform import Rotation
+import trimesh
+import argparse
+import logging
+import colorsys
 
-
-def load_K_Rt_from_P(filename, P=None):
-    if P is None:
-        lines = open(filename).read().splitlines()
-        if len(lines) == 4:
-            lines = lines[1:]
-        lines = [[x[0], x[1], x[2], x[3]] for x in (x.split(" ") for x in lines)]
-        P = np.asarray(lines).astype(np.float32).squeeze()
-
-    out = cv2.decomposeProjectionMatrix(P)
-    K = out[0]
-    R = out[1]
-    t = out[2]
-
-    K = K / K[2, 2]
-    intrinsics = np.eye(4)
-    intrinsics[:3, :3] = K
-
-    pose = np.eye(4, dtype=np.float32)
-    pose[:3, :3] = R.transpose()
-    pose[:3, 3] = (t[:3] / t[3])[:, 0]
-
-    return intrinsics, pose
-
-
-def umeyama_alignment(x, y, with_scale=True):
+def create_camera_pyramid(pose, color, scale=0.1):
     """
-    Computes the least squares solution parameters of an Sim(m) matrix
-    that minimizes the distance between a set of registered points.
-    Umeyama, Shinji: Least-squares estimation of transformation parameters
-                     between two point patterns. IEEE PAMI, 1991
-    :param x: mxn matrix of points, m = dimension, n = nr. of data points
-    :param y: mxn matrix of points, m = dimension, n = nr. of data points
-    :param with_scale: set to True to align also the scale (default: 1.0 scale)
-    :return: r, t, c - rotation matrix, translation vector and scale factor
-    """
-    if x.shape != y.shape:
-        assert False, "x.shape not equal to y.shape"
+    為單一相機位姿建立一個 3D 金字塔模型。
 
-    # m = dimension, n = nr. of data points
-    m, n = x.shape
-
-    # means, eq. 34 and 35
-    mean_x = x.mean(axis=1)
-    mean_y = y.mean(axis=1)
-
-    # variance, eq. 36
-    # "transpose" for column subtraction
-    sigma_x = 1.0 / n * (np.linalg.norm(x - mean_x[:, np.newaxis])**2)
-
-    # covariance matrix, eq. 38
-    outer_sum = np.zeros((m, m))
-    for i in range(n):
-        outer_sum += np.outer((y[:, i] - mean_y), (x[:, i] - mean_x))
-    cov_xy = np.multiply(1.0 / n, outer_sum)
-
-    # SVD (text betw. eq. 38 and 39)
-    u, d, v = np.linalg.svd(cov_xy)
-
-    # S matrix, eq. 43
-    s = np.eye(m)
-    if np.linalg.det(u) * np.linalg.det(v) < 0.0:
-        # Ensure a RHS coordinate system (Kabsch algorithm).
-        s[m - 1, m - 1] = -1
-
-    # rotation, eq. 40
-    r = u.dot(s).dot(v)
-
-    # scale & translation, eq. 42 and 41
-    c = 1 / sigma_x * np.trace(np.diag(d).dot(s)) if with_scale else 1.0
-    t = mean_y - np.multiply(c, r.dot(mean_x))
-
-    return r, t, c
-
-
-def pose_alignment(poses_pred, poses_gt):
-
-    num_gt = poses_gt.shape[0]
-
-    xyz_result = poses_pred[:num_gt, :3, 3].T
-    xyz_gt = poses_gt[:, :3, 3].T
-
-    r, t, scale = umeyama_alignment(xyz_result, xyz_gt, with_scale=True)
-    # print(scale)
-
-    align_transformation = np.eye(4)
-    align_transformation[:3:, :3] = r
-    align_transformation[:3, 3] = t
-
-    for cnt in range(poses_pred.shape[0]):
-        poses_pred[cnt][:3, 3] *= scale
-        poses_pred[cnt] = align_transformation @ poses_pred[cnt]
-
-    return poses_pred
-
-
-def rotation_error(pose_error):
-    """Compute rotation error
     Args:
-        pose_error (4x4 array): relative pose error
+        pose (np.array): 4x4 的相機 C2W (camera-to-world) 位姿矩陣。
+        color (list): 金字塔的顏色 [R, G, B]。
+        scale (float): 金字塔的大小。
+
     Returns:
-        rot_error (float): rotation error
+        tuple: (vertices, faces, vertex_colors)
     """
-    r_diff = Rotation.from_matrix(pose_error[:3, :3])
-    pose_error = r_diff.as_matrix()
-    a = pose_error[0, 0]
-    b = pose_error[1, 1]
-    c = pose_error[2, 2]
-    d = 0.5*(a+b+c-1.0)
-    rot_error = np.arccos(max(min(d, 1.0), -1.0))
-    return rot_error
+    # 金字塔的局部座標系頂點
+    # 頂點 0 是相機中心 (金字塔尖)
+    # 頂點 1-4 是相機的影像平面四角
+    vertices_local = np.array([
+        [0, 0, 0],
+        [-scale, -scale, scale * 2],
+        [scale, -scale, scale * 2],
+        [scale, scale, scale * 2],
+        [-scale, scale, scale * 2]
+    ])
 
+    # 金字塔的面 (連接頂點)
+    faces = np.array([
+        [0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1],  # 四個側面
+        [1, 3, 2], [1, 4, 3]  # 兩個底面三角形
+    ])
 
-def translation_error(pose_error):
-    """Compute translation error
+    # 將局部座標頂點轉換到世界座標系
+    vertices_world = (pose[:3, :3] @ vertices_local.T + pose[:3, 3, np.newaxis]).T
+
+    # 為每個頂點設定顏色
+    vertex_colors = np.array([color] * len(vertices_world))
+
+    return vertices_world, faces, vertex_colors
+
+def visualize_poses(work_dir):
+    """
+    讀取 poses.npy 和 sparse_points.ply，合併並產生一個包含可視化相機的 pose.ply。
+
     Args:
-        pose_error (4x4 array): relative pose error
-    Returns:
-        trans_error (float): translation error
+        work_dir (str): 工作目錄，應包含 poses.npy 和 sparse_points.ply。
     """
-    dx = pose_error[0, 3]
-    dy = pose_error[1, 3]
-    dz = pose_error[2, 3]
-    trans_error = np.sqrt(dx**2+dy**2+dz**2)
-    return trans_error
+    poses_file = os.path.join(work_dir, 'poses.npy')
+    points_file = os.path.join(work_dir, 'sparse_points.ply')
+    output_file = os.path.join(work_dir, 'pose.ply')
 
+    # --- 檢查檔案是否存在 ---
+    if not os.path.exists(poses_file):
+        logging.error(f"錯誤: 找不到相機位姿檔案 '{poses_file}'")
+        return
+    if not os.path.exists(points_file):
+        logging.warning(f"警告: 找不到稀疏點雲檔案 '{points_file}'。將只產生相機位姿。")
+        base_points = np.zeros((0, 3))
+        base_colors = np.zeros((0, 3))
+    else:
+        # --- 載入稀疏點雲 ---
+        try:
+            point_cloud = trimesh.load(points_file)
+            base_points = np.array(point_cloud.vertices)
+            # 如果點雲有顏色就使用，沒有就設為灰色
+            if hasattr(point_cloud.visual, 'vertex_colors'):
+                base_colors = np.array(point_cloud.visual.vertex_colors)[:, :3]
+            else:
+                base_colors = np.full_like(base_points, 128, dtype=np.uint8)
+            logging.info(f"成功載入 {len(base_points)} 個稀疏點雲。")
+        except Exception as e:
+            logging.error(f"讀取點雲檔案 '{points_file}' 失敗: {e}")
+            base_points = np.zeros((0, 3))
+            base_colors = np.zeros((0, 3))
 
-def compute_RPE(gt, pred):
-    trans_errors = []
-    rot_errors = []
-    for i in range(len(gt)-1):
-        gt1 = gt[i]
-        gt2 = gt[i+1]
-        gt_rel = np.linalg.inv(gt1) @ gt2
-
-        pred1 = pred[i]
-        pred2 = pred[i+1]
-        pred_rel = np.linalg.inv(pred1) @ pred2
-        rel_err = np.linalg.inv(gt_rel) @ pred_rel
-
-        trans_errors.append(translation_error(rel_err))
-        rot_errors.append(rotation_error(rel_err))
-
-    return np.array(rot_errors), np.array(trans_errors)
-
-
-def compute_ATE(gt, pred):
-    """Compute RMSE of ATE
-    Args:
-        gt: ground-truth poses
-        pred: predicted poses
-    """
-    r_errs = []
-    t_errs = []
-
-    for i in range(len(pred)):
-        # cur_gt = np.linalg.inv(gt_0) @ gt[i]
-        cur_gt = gt[i]
-        gt_xyz = cur_gt[:3, 3]
-
-        # cur_pred = np.linalg.inv(pred_0) @ pred[i]
-        cur_pred = pred[i]
-        pred_xyz = cur_pred[:3, 3]
-
-        align_err = gt_xyz - pred_xyz
-
-        t_errs.append(np.sqrt(np.sum(align_err ** 2)))
-
-        r_diff = np.linalg.inv(cur_gt[:3, :3]) @ cur_pred[:3, :3]
-        r_errs.append(rotation_error(r_diff))
-
-    # ate = np.sqrt(np.mean(np.asarray(errors) ** 2))
-    return np.array(r_errs), np.array(t_errs)
-
-
-def generate_camera(scale_mats_np, intrinsics, poses, out_file):
-    # write poses
-    cameras = {}
-    for idx in range(len(poses)):
-
-        cameras["scale_mat_%d" % (idx)] = scale_mats_np[idx]
-
-        K = intrinsics[idx]
-        P = K @ np.linalg.inv(poses[idx])
-        cameras["world_mat_%d" % (idx)] = P
-
-    np.savez(out_file, **cameras)
-
-
-def load_camera(cam_file, n_imgs):
-    # camera_dict = np.load("C:/Users/hsu/Desktop/project/porf_data/dtu/cup2/cameras_colmap.npz", allow_pickle=True)
+    # --- 載入相機位姿 ---
+    poses = np.load(poses_file)  # 格式應為 (N, 3, 5) 或 (N, 4, 4)
     
-    camera_dict = np.load(cam_file, allow_pickle=True)
-    world_mats_np = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(n_imgs)]
-    scale_mats_np = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(n_imgs)]
+    # NeRF-style poses (3x5) to standard 4x4 C2W matrices
+    if poses.shape[1] == 3 and poses.shape[2] == 5:
+        # [R|t|H,W,f] -> 4x4 C2W
+        c2w_mats = []
+        for p in poses:
+            mat = np.eye(4)
+            mat[:3, :3] = p[:3, :3]
+            mat[:3, 3] = p[:3, 3]
+            c2w_mats.append(mat)
+        poses = np.array(c2w_mats)
+    
+    logging.info(f"成功載入 {len(poses)} 個相機位姿。")
 
-    intrinsics = []
-    poses = []
-    for P in world_mats_np:
-        intrinsic, pose = load_K_Rt_from_P(None, P[:3])
-        poses.append(pose)
-        intrinsics.append(intrinsic)
-    poses = np.stack(poses)
-    intrinsics = np.stack(intrinsics)
+    all_vertices = [base_points]
+    all_faces = []
+    all_colors = [base_colors]
 
-    return scale_mats_np, world_mats_np, intrinsics, poses
+    # --- 為每個相機建立金字塔 ---
+    face_offset = len(base_points)
+    for i, pose in enumerate(poses):
+        # 為相機建立一個獨特的顏色 (使用 HSV 色彩空間)
+        hue = i / len(poses)
+        # 使用標準函式庫 colorsys 進行轉換，避免 trimesh 版本問題
+        color = np.array(colorsys.hsv_to_rgb(hue, 0.8, 1.0)) * 255
+        
+        verts, faces, colors = create_camera_pyramid(pose, color, scale=0.05)
+        
+        all_vertices.append(verts)
+        all_faces.append(faces + face_offset)
+        all_colors.append(colors)
+        
+        face_offset += len(verts)
+
+    # --- 合併並儲存 ---
+    final_vertices = np.concatenate(all_vertices, axis=0)
+    final_faces = np.concatenate(all_faces, axis=0) if all_faces else np.zeros((0, 3))
+    final_colors = np.concatenate(all_colors, axis=0)
+
+    # 建立 Trimesh 物件並匯出
+    final_mesh = trimesh.Trimesh(vertices=final_vertices, faces=final_faces, vertex_colors=final_colors.astype(np.uint8))
+    final_mesh.export(output_file)
+    
+    logging.info(f"成功匯出視覺化位姿檔案至 '{output_file}'")
+    logging.info("您現在可以用 MeshLab 或 CloudCompare 等軟體開啟此檔案進行分析。")
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="視覺化 COLMAP 的相機位姿和稀疏點雲。")
+    parser.add_argument('--work_dir', type=str, required=True,
+                        help="工作目錄的路徑，例如 './porf_data/dtu/scan24'")
+    
+    args = parser.parse_args()
 
-    root = 'exp_dtu'
-    iters = 'poses_050000'
+    # 設定日誌
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s [%(levelname)s] %(message)s',
+                        handlers=[logging.StreamHandler()])
 
-    method = 'dtu_sift_porf'
-    out_name = 'cameras_refine_porf.npz'
-
-    root_dir = Path('./porf_data/dtu/')
-    scenes = [os.path.basename(s) for s in sorted(root_dir.dirs())]
-
-    for s in scenes:
-        print(s)
-        scene_dir = root_dir/s
-
-        pose_file = f'./{root}/{s}/{method}/{iters}/refined_pose.txt'
-        if not os.path.exists(pose_file):
-            continue
-
-        poses_refine = np.loadtxt(pose_file).reshape(-1, 4, 4)
-
-        # gt pose
-        n_imgs = len((scene_dir/'image').files('*'))
-        scale_mats_np, _, intrinsics, gt_poses = load_camera(scene_dir/'cameras_colmap.npz', n_imgs)
-
-        # align pose to gt
-        poses_refine = pose_alignment(poses_refine, gt_poses)
-
-        r_err, t_err = compute_ATE(gt_poses, poses_refine)
-        print('ate errs: ', np.mean(r_err) / 3.14 * 180, np.mean(t_err))
-
-        r_err, t_err = compute_RPE(gt_poses, poses_refine)
-        print('rpe errs: ', np.mean(r_err) / 3.14 * 180, np.mean(t_err))
-
-        generate_camera(scale_mats_np, intrinsics, poses_refine, os.path.join(scene_dir, out_name))
+    if not os.path.isdir(args.work_dir):
+        logging.error(f"錯誤: 找不到指定的目錄 '{args.work_dir}'")
+    else:
+        visualize_poses(args.work_dir)

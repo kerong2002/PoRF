@@ -1,31 +1,6 @@
 # Copyright (c) 2018, ETH Zurich and UNC Chapel Hill.
 # All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-#     * Redistributions of source code must retain the above copyright
-#       notice, this list of conditions and the following disclaimer.
-#
-#     * Redistributions in binary form must reproduce the above copyright
-#       notice, this list of conditions and the following disclaimer in the
-#       documentation and/or other materials provided with the distribution.
-#
-#     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
-#       its contributors may be used to endorse or promote products derived
-#       from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
+# (版權宣告...略)
 #
 # Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
 
@@ -34,22 +9,33 @@ import sys
 import collections
 import numpy as np
 import struct
+import logging
 
+# --- 資料結構定義 ---
+# 使用 namedtuple 定義 COLMAP 模型中的標準資料結構，方便存取。
 
+# 相機模型: model_id (ID), model_name (名稱), num_params (參數數量)
 CameraModel = collections.namedtuple(
     "CameraModel", ["model_id", "model_name", "num_params"])
+
+# 相機: id, model (模型名稱), width, height, params (內參)
 Camera = collections.namedtuple(
     "Camera", ["id", "model", "width", "height", "params"])
+
+# 影像: id, qvec (四元數), tvec (平移向量), camera_id, name (檔名), xys (2D特徵點), point3D_ids (對應的3D點ID)
 BaseImage = collections.namedtuple(
     "Image", ["id", "qvec", "tvec", "camera_id", "name", "xys", "point3D_ids"])
+
+# 3D點: id, xyz (座標), rgb (顏色), error (重投影誤差), image_ids (可見影像ID), point2D_idxs (在影像中的2D點索引)
 Point3D = collections.namedtuple(
     "Point3D", ["id", "xyz", "rgb", "error", "image_ids", "point2D_idxs"])
 
 class Image(BaseImage):
+    """繼承自 BaseImage，並增加一個方便的方法將四元數轉換為旋轉矩陣。"""
     def qvec2rotmat(self):
         return qvec2rotmat(self.qvec)
 
-
+# COLMAP 支援的相機模型列表
 CAMERA_MODELS = {
     CameraModel(model_id=0, model_name="SIMPLE_PINHOLE", num_params=3),
     CameraModel(model_id=1, model_name="PINHOLE", num_params=4),
@@ -63,28 +49,15 @@ CAMERA_MODELS = {
     CameraModel(model_id=9, model_name="RADIAL_FISHEYE", num_params=5),
     CameraModel(model_id=10, model_name="THIN_PRISM_FISHEYE", num_params=12)
 }
-CAMERA_MODEL_IDS = dict([(camera_model.model_id, camera_model) \
-                         for camera_model in CAMERA_MODELS])
-
+CAMERA_MODEL_IDS = dict([(camera_model.model_id, camera_model) for camera_model in CAMERA_MODELS])
 
 def read_next_bytes(fid, num_bytes, format_char_sequence, endian_character="<"):
-    """Read and unpack the next bytes from a binary file.
-    :param fid:
-    :param num_bytes: Sum of combination of {2, 4, 8}, e.g. 2, 6, 16, 30, etc.
-    :param format_char_sequence: List of {c, e, f, d, h, H, i, I, l, L, q, Q}.
-    :param endian_character: Any of {@, =, <, >, !}
-    :return: Tuple of read and unpacked values.
-    """
+    """從二進位檔案中讀取並解包下一個位元組序列。"""
     data = fid.read(num_bytes)
     return struct.unpack(endian_character + format_char_sequence, data)
 
-
 def read_cameras_text(path):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::WriteCamerasText(const std::string& path)
-        void Reconstruction::ReadCamerasText(const std::string& path)
-    """
+    """從 cameras.txt 讀取相機資料。"""
     cameras = {}
     with open(path, "r") as fid:
         while True:
@@ -104,17 +77,12 @@ def read_cameras_text(path):
                                             params=params)
     return cameras
 
-
 def read_cameras_binary(path_to_model_file):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::WriteCamerasBinary(const std::string& path)
-        void Reconstruction::ReadCamerasBinary(const std::string& path)
-    """
+    """從 cameras.bin 讀取相機資料。"""
     cameras = {}
     with open(path_to_model_file, "rb") as fid:
         num_cameras = read_next_bytes(fid, 8, "Q")[0]
-        for camera_line_index in range(num_cameras):
+        for _ in range(num_cameras):
             camera_properties = read_next_bytes(
                 fid, num_bytes=24, format_char_sequence="iiQQ")
             camera_id = camera_properties[0]
@@ -133,13 +101,8 @@ def read_cameras_binary(path_to_model_file):
         assert len(cameras) == num_cameras
     return cameras
 
-
 def read_images_text(path):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::ReadImagesText(const std::string& path)
-        void Reconstruction::WriteImagesText(const std::string& path)
-    """
+    """從 images.txt 讀取影像資料。"""
     images = {}
     with open(path, "r") as fid:
         while True:
@@ -164,17 +127,12 @@ def read_images_text(path):
                     xys=xys, point3D_ids=point3D_ids)
     return images
 
-
 def read_images_binary(path_to_model_file):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::ReadImagesBinary(const std::string& path)
-        void Reconstruction::WriteImagesBinary(const std::string& path)
-    """
+    """從 images.bin 讀取影像資料。"""
     images = {}
     with open(path_to_model_file, "rb") as fid:
         num_reg_images = read_next_bytes(fid, 8, "Q")[0]
-        for image_index in range(num_reg_images):
+        for _ in range(num_reg_images):
             binary_image_properties = read_next_bytes(
                 fid, num_bytes=64, format_char_sequence="idddddddi")
             image_id = binary_image_properties[0]
@@ -183,7 +141,7 @@ def read_images_binary(path_to_model_file):
             camera_id = binary_image_properties[8]
             image_name = ""
             current_char = read_next_bytes(fid, 1, "c")[0]
-            while current_char != b"\x00":   # look for the ASCII 0 entry
+            while current_char != b"\x00":   # 尋找 ASCII 的 null 終止符
                 image_name += current_char.decode("utf-8")
                 current_char = read_next_bytes(fid, 1, "c")[0]
             num_points2D = read_next_bytes(fid, num_bytes=8,
@@ -199,13 +157,8 @@ def read_images_binary(path_to_model_file):
                 xys=xys, point3D_ids=point3D_ids)
     return images
 
-
 def read_points3D_text(path):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::ReadPoints3DText(const std::string& path)
-        void Reconstruction::WritePoints3DText(const std::string& path)
-    """
+    """從 points3D.txt 讀取 3D 點雲資料。"""
     points3D = {}
     with open(path, "r") as fid:
         while True:
@@ -226,17 +179,12 @@ def read_points3D_text(path):
                                                point2D_idxs=point2D_idxs)
     return points3D
 
-
 def read_points3d_binary(path_to_model_file):
-    """
-    see: src/base/reconstruction.cc
-        void Reconstruction::ReadPoints3DBinary(const std::string& path)
-        void Reconstruction::WritePoints3DBinary(const std::string& path)
-    """
+    """從 points3D.bin 讀取 3D 點雲資料。"""
     points3D = {}
     with open(path_to_model_file, "rb") as fid:
         num_points = read_next_bytes(fid, 8, "Q")[0]
-        for point_line_index in range(num_points):
+        for _ in range(num_points):
             binary_point_line_properties = read_next_bytes(
                 fid, num_bytes=43, format_char_sequence="QdddBBBd")
             point3D_id = binary_point_line_properties[0]
@@ -256,8 +204,14 @@ def read_points3d_binary(path_to_model_file):
                 point2D_idxs=point2D_idxs)
     return points3D
 
-
 def read_model(path, ext):
+    """
+    讀取 COLMAP 模型的主函式。
+
+    Args:
+        path (str): 模型資料夾的路徑 (例如 'sparse/0')。
+        ext (str): 副檔名，'.txt' 或 '.bin'。
+    """
     if ext == ".txt":
         cameras = read_cameras_text(os.path.join(path, "cameras" + ext))
         images = read_images_text(os.path.join(path, "images" + ext))
@@ -268,8 +222,8 @@ def read_model(path, ext):
         points3D = read_points3d_binary(os.path.join(path, "points3D") + ext)
     return cameras, images, points3D
 
-
 def qvec2rotmat(qvec):
+    """四元數轉換為旋轉矩陣。"""
     return np.array([
         [1 - 2 * qvec[2]**2 - 2 * qvec[3]**2,
          2 * qvec[1] * qvec[2] - 2 * qvec[0] * qvec[3],
@@ -281,8 +235,8 @@ def qvec2rotmat(qvec):
          2 * qvec[2] * qvec[3] + 2 * qvec[0] * qvec[1],
          1 - 2 * qvec[1]**2 - 2 * qvec[2]**2]])
 
-
 def rotmat2qvec(R):
+    """旋轉矩陣轉換為四元數。"""
     Rxx, Ryx, Rzx, Rxy, Ryy, Rzy, Rxz, Ryz, Rzz = R.flat
     K = np.array([
         [Rxx - Ryy - Rzz, 0, 0, 0],
@@ -295,18 +249,22 @@ def rotmat2qvec(R):
         qvec *= -1
     return qvec
 
-
 def main():
+    """作為獨立腳本執行時的主函式。"""
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     if len(sys.argv) != 3:
-        print("Usage: python read_model.py path/to/model/folder [.txt,.bin]")
+        logging.error("使用方式: python read_model.py path/to/model/folder [.txt,.bin]")
         return
 
-    cameras, images, points3D = read_model(path=sys.argv[1], ext=sys.argv[2])
-
-    print("num_cameras:", len(cameras))
-    print("num_images:", len(images))
-    print("num_points3D:", len(points3D))
-
+    try:
+        cameras, images, points3D = read_model(path=sys.argv[1], ext=sys.argv[2])
+        logging.info(f"相機數量: {len(cameras)}")
+        logging.info(f"影像數量: {len(images)}")
+        logging.info(f"3D點數量: {len(points3D)}")
+    except FileNotFoundError:
+        logging.error(f"錯誤: 在 '{sys.argv[1]}' 中找不到模型檔案。")
+    except Exception as e:
+        logging.error(f"發生未知錯誤: {e}")
 
 if __name__ == "__main__":
     main()
