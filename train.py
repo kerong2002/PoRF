@@ -16,45 +16,33 @@ from models.renderer import NeuSRenderer
 from models.networks import LearnPose, PoRF
 import utils
 
+print(torch.__version__)
+
 # torch.autograd.set_detect_anomaly(True)
 
+
 class PoseRunner:
+    # def __init__(self, status_label, conf_path, mode='train', case='CASE_NAME'):
     def __init__(self, conf_path, mode='train', case='CASE_NAME'):
+        # self.status_label = status_label
         self.device = torch.device('cuda')
 
-        # --- 組態設定 (Configuration) ---
+        # Configuration
         self.conf_path = conf_path
-        with open(self.conf_path, 'r') as f:
-            conf_text = f.read()
-        
-        # 將設定檔中的 CASE_NAME 替換為實際的案例名稱
+        f = open(self.conf_path)
+        conf_text = f.read()
         conf_text = conf_text.replace('CASE_NAME', case)
-        
+        f.close()
+
+        print(conf_text)
         self.conf = ConfigFactory.parse_string(conf_text)
         self.conf['dataset.data_dir'] = self.conf['dataset.data_dir'].replace('CASE_NAME', case)
         self.base_exp_dir = self.conf['general.base_exp_dir']
         os.makedirs(self.base_exp_dir, exist_ok=True)
-
-        # --- 設定日誌 (Logging) ---
-        log_file = os.path.join(self.base_exp_dir, 'train.log')
-        for handler in logging.root.handlers[:]:
-            logging.root.removeHandler(handler)
-        logging.basicConfig(level=logging.INFO,
-                            format='%(asctime)s [%(levelname)s] %(message)s',
-                            handlers=[
-                                logging.FileHandler(log_file, mode='w'),
-                                logging.StreamHandler() # 同時輸出到終端機
-                            ])
-        
-        # 將載入的設定檔內容寫入日誌，而不是直接 print
-        logging.info("--- 載入的 HOCON 設定檔 ---")
-        logging.info(conf_text)
-        logging.info("--------------------------")
-
         self.dataset = Dataset(self.conf['dataset'])
         self.iter_step = 0
 
-        # --- 訓練參數 (Training parameters) ---
+        # Training parameters
         self.end_iter = self.conf['train.pose_end_iter']
         self.val_freq = self.conf.get_int('train.pose_val_freq')
         self.report_freq = self.conf.get_int('train.report_freq')
@@ -67,21 +55,20 @@ class PoseRunner:
         self.warm_up_end = self.conf.get_float('train.warm_up_end', default=0.0)
         self.anneal_end = self.conf.get_float('train.anneal_end', default=0.0)
 
-        # --- PoRF 參數 ---
+        # porf parameters
         self.use_porf = self.conf.get_bool('train.use_porf')
         self.inlier_threshold = self.conf.get_float('train.inlier_threshold')
         self.num_pairs = self.conf.get_int('train.num_pairs')
 
-        # --- 損失權重 (Loss Weights) ---
+        # Weights
         self.color_loss_weight = self.conf.get_float('train.color_loss_weight')
         self.igr_weight = self.conf.get_float('train.igr_weight')
         self.epipolar_loss_weight = self.conf.get_float('train.epipolar_loss_weight')
         self.mode = mode
 
-        # --- 初始化網路和優化器 (Networks and Optimizers) ---
         self.writer = SummaryWriter(log_dir=os.path.join(self.base_exp_dir, 'pose_logs'))
 
-        # 初始化 SDF, Variance, Rendering 網路
+        # Networks
         params_to_train = []
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
@@ -90,14 +77,15 @@ class PoseRunner:
         params_to_train += list(self.deviation_network.parameters())
         params_to_train += list(self.render_network.parameters())
 
-        self.optimizer = torch.optim.Adam(params_to_train, lr=self.learning_rate)
+        optim_params = [{'params': params_to_train, 'lr': self.learning_rate}]
+        self.optimizer = torch.optim.Adam(optim_params)
 
         self.renderer = NeuSRenderer(self.sdf_network,
                                      self.deviation_network,
                                      self.render_network,
                                      **self.conf['model.neus_renderer'])
 
-        # 初始化相機位姿優化網路 (PoRF 或 LearnPose)
+        # # pose optimization
         if self.use_porf:
             self.pose_param_net = PoRF(
                 self.dataset.n_images,
@@ -113,21 +101,19 @@ class PoseRunner:
         self.optimizer_pose = torch.optim.Adam(self.pose_param_net.parameters(),
                                                lr=self.pose_learning_rate)
 
-        # 驗證初始位姿
+        # validate pose for initial pose err analysis
         if self.iter_step == 0:
             self.validate_pose(initial_pose=True)
 
     def train(self):
-        """主訓練循環"""
         self.update_learning_rate()
         res_step = self.end_iter - self.iter_step
 
-        for iter_i in tqdm(range(res_step), desc="Training"):
+        for iter_i in tqdm(range(res_step)):
 
             self.update_image_index()
 
-            # --- PoRF ---
-            # 從資料集中取樣匹配點對，用於計算對極幾何損失
+            # 提取npz的資料
             intrinsic, pose, intrinsic_src_list, pose_src_list, match_list = self.dataset.sample_matches(self.img_idx,
                                                                                                          self.pose_param_net)
 
@@ -135,7 +121,7 @@ class PoseRunner:
             for cam, p in zip(intrinsic_src_list, pose_src_list):
                 P_src_list.append(utils.compute_P_from_KT(cam, p))
 
-            # 評估當前位姿的品質，計算對極損失
+            # match
             avg_inlier_rate, epipolar_loss = utils.evaluate_pose(intrinsic,
                                                               pose,
                                                               P_src_list,
@@ -143,8 +129,7 @@ class PoseRunner:
                                                               self.num_pairs,
                                                               self.inlier_threshold)
 
-            # --- NeuS ---
-            # 在當前影像中隨機取樣光線
+            # neus
             data = self.dataset.gen_random_rays_at(self.img_idx,
                                                    self.batch_size,
                                                    pose
@@ -158,7 +143,6 @@ class PoseRunner:
             if self.use_white_bkgd:
                 background_rgb = torch.ones([1, 3])
 
-            # 渲染光線，得到顏色、SDF值等
             render_out = self.renderer.render(rays_o,
                                               rays_d,
                                               near,
@@ -166,7 +150,6 @@ class PoseRunner:
                                               background_rgb=background_rgb,
                                               cos_anneal_ratio=self.get_cos_anneal_ratio())
 
-            # --- 計算損失 (Loss Calculation) ---
             color = render_out['color']
             s_val = render_out['s_val']
             cdf = render_out['cdf']
@@ -177,21 +160,17 @@ class PoseRunner:
             mask = torch.ones_like(color[:, :1])
             mask_sum = mask.sum()
 
-            # 顏色損失 (L1)
             color_error = (color - true_rgb) * mask
             color_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
             psnr = 20.0 * torch.log10(1.0 / (((color - true_rgb)**2 * mask).sum() / (mask_sum * 3.0)).sqrt())
 
-            # Eikonal 損失，約束 SDF 梯度為 1
             eikonal_loss = gradient_error
 
-            # 總損失
             loss = color_loss * self.color_loss_weight +\
                 eikonal_loss * self.igr_weight +\
                 dist_loss * 0.001 +\
                 epipolar_loss * self.epipolar_loss_weight
 
-            # --- 反向傳播與優化 ---
             self.optimizer.zero_grad()
             self.optimizer_pose.zero_grad()
             loss.backward()
@@ -201,7 +180,6 @@ class PoseRunner:
 
             self.iter_step += 1
 
-            # --- 寫入 Tensorboard ---
             self.writer.add_scalar('Loss/loss', loss, self.iter_step)
             self.writer.add_scalar('Loss/color_loss', color_loss, self.iter_step)
             self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
@@ -213,7 +191,7 @@ class PoseRunner:
             self.writer.add_scalar('Statistics/inlier_rate', avg_inlier_rate, self.iter_step)
             self.writer.add_scalar('Loss/epipolar_loss', epipolar_loss, self.iter_step)
 
-            # 檢查位姿梯度 (用於除錯)
+            # check pose grad for debug if not using porf
             if not self.use_porf:
                 r_grad_norms = torch.linalg.norm(self.pose_param_net.r.grad,
                                                  dim=-1,
@@ -228,9 +206,10 @@ class PoseRunner:
                 self.writer.add_scalar('Statistics/r_grad', r_grad, self.iter_step)
                 self.writer.add_scalar('Statistics/t_grad', t_grad, self.iter_step)
 
-            # --- 定期報告與驗證 ---
             if self.iter_step % self.report_freq == 0:
-                logging.info(f"Iter: {self.iter_step:8>d} Loss: {loss.item():.4f} LR: {self.optimizer.param_groups[0]['lr']:.6f}")
+                print(self.base_exp_dir)
+                print('iter:{:8>d} loss = {} lr={}'.format(self.iter_step, loss, self.optimizer.param_groups[0]['lr']))
+                # self.status_label.config(text="training status: training\niter:{:8>d} loss = {} lr={}".format(self.iter_step, loss, self.optimizer.param_groups[0]['lr']))
 
             if self.iter_step % self.val_freq == 0:
                 self.validate_pose()
@@ -242,18 +221,15 @@ class PoseRunner:
         self.validate_image()
 
     def update_image_index(self):
-        """隨機選擇一張圖片進行訓練"""
         self.img_idx = np.random.randint(self.dataset.n_images)
 
     def get_cos_anneal_ratio(self):
-        """計算 Cosine Annealing 的比例"""
         if self.anneal_end == 0.0:
             return 1.0
         else:
             return np.min([1.0, self.iter_step / self.anneal_end])
 
     def update_learning_rate(self):
-        """根據 warm-up 和 cosine decay 更新學習率"""
         if self.iter_step < self.warm_up_end:
             learning_factor = self.iter_step / self.warm_up_end
         else:
@@ -267,7 +243,6 @@ class PoseRunner:
             g['lr'] = self.learning_rate * learning_factor
 
     def save_checkpoint(self):
-        """儲存模型權重"""
         checkpoint = {
             'sdf_network': self.sdf_network.state_dict(),
             'variance_network': self.deviation_network.state_dict(),
@@ -280,14 +255,12 @@ class PoseRunner:
         out_dir = os.path.join(self.base_exp_dir, 'pose_checkpoints')
         os.makedirs(out_dir, exist_ok=True)
         torch.save(checkpoint, os.path.join(out_dir, 'ckpt_{:0>6d}.pth'.format(self.iter_step)))
-        logging.info(f"Checkpoint saved to {out_dir}")
 
     def validate_image(self, idx=-1, resolution_level=-1):
-        """渲染一張影像並與真實影像比較，用於驗證"""
         if idx < 0:
             idx = np.random.randint(self.dataset.n_images)
 
-        logging.info(f'Validating image: iter={self.iter_step}, camera_idx={idx}')
+        print('Validate: iter: {}, camera: {}'.format(self.iter_step, idx))
 
         if resolution_level < 0:
             resolution_level = self.validate_resolution_level
@@ -305,15 +278,15 @@ class PoseRunner:
             near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
             background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
 
-            with torch.no_grad():
-                render_out = self.renderer.render(rays_o_batch,
-                                                  rays_d_batch,
-                                                  near,
-                                                  far,
-                                                  cos_anneal_ratio=self.get_cos_anneal_ratio(),
-                                                  background_rgb=background_rgb)
+            render_out = self.renderer.render(rays_o_batch,
+                                              rays_d_batch,
+                                              near,
+                                              far,
+                                              cos_anneal_ratio=self.get_cos_anneal_ratio(),
+                                              background_rgb=background_rgb)
 
-            def feasible(key): return (key in render_out) and (render_out[key] is not None)
+            def feasible(key): return (key in render_out) and (
+                render_out[key] is not None)
 
             if feasible('color'):
                 out_rgb.append(render_out['color'].detach().cpu().numpy()[..., :3])
@@ -355,9 +328,10 @@ class PoseRunner:
                            normal_img[..., i])
 
     def validate_mesh(self, world_space=True, resolution=256, threshold=0.0):
-        """從 SDF 中提取 Mesh 表面"""
+        # 生出面的顏色、顏色平滑、換dataset
         bound_min = self.dataset.object_bbox_min
         bound_max = self.dataset.object_bbox_max
+        
             
         with torch.no_grad():
             vertices, triangles, normals, vertices2, triangles2 =\
@@ -375,16 +349,14 @@ class PoseRunner:
             self.dataset.scale_mats_np[0][:3, 3][None]
     
         mesh = trimesh.Trimesh(vertices_w, triangles)
-        mesh_path = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step))
-        mesh.export(mesh_path)
-        logging.info(f"Mesh saved to {mesh_path}")
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes',  
+                    '{:0>8d}.ply'.format(self.iter_step)))
     
         mesh = trimesh.Trimesh(vertices_w2, triangles2)
-        mesh_path_2 = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}2.ply'.format(self.iter_step))
-        mesh.export(mesh_path_2)
-        logging.info(f"Mesh 2 saved to {mesh_path_2}")
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes',  
+                    '{:0>8d}2.ply'.format(self.iter_step)))
         
-        # --- 以下為著色部分 ---
+        
         if vertices.shape == normals.shape:
             with torch.no_grad():
                 pts = torch.tensor(vertices.copy()).to(torch.float32)
@@ -441,9 +413,18 @@ class PoseRunner:
                 mesh.export(os.path.join(self.base_exp_dir, 'meshes',
                             '{:0>8d}2.ply'.format(self.iter_step)))
                 
+                
+                
+            
+        
+        
+        
         normals2 = trimesh.Trimesh(vertices, triangles).vertex_normals
         if normals2.shape == vertices.shape:
             with torch.no_grad():
+                # 確保 normals2 和 pts 的數量一致，避免張量大小不匹配
+                if normals2.shape[0] > pts.shape[0]:
+                    normals2 = normals2[:pts.shape[0]]
                 sampled_color4 = self.render_network(pts,
                                             gradients,
                                             torch.tensor(normals2.copy()).to(torch.float32),
@@ -452,6 +433,7 @@ class PoseRunner:
             mesh = trimesh.Trimesh(vertices_w, triangles, vertex_colors=(sampled_color4[:, [2, 1, 0]]))
             mesh.export(os.path.join(self.base_exp_dir, 'meshes',
                         '{:0>8d}5.ply'.format(self.iter_step)))
+            
             
         if vertices.shape != normals.shape:    
             with torch.no_grad():
@@ -472,10 +454,9 @@ class PoseRunner:
                 mesh.export(os.path.join(self.base_exp_dir, 'meshes',
                             '{:0>8d}42.ply'.format(self.iter_step)))
 
-        logging.info('Mesh validation finished.')
+        logging.info('End')
 
     def validate_pose(self, initial_pose=False):
-        """驗證相機位姿，並計算 ATE (Absolute Trajectory Error)"""
         pose_dir = os.path.join(
             self.base_exp_dir, 'poses_{:06d}'.format(self.iter_step))
         os.makedirs(pose_dir, exist_ok=True)
@@ -489,7 +470,7 @@ class PoseRunner:
             else:
                 p = self.pose_param_net(idx)
             p = p.detach().cpu().numpy()
-            # 縮放與變換
+            # scale and transform
             t = scale_mat @ p[:, 3].T
             p = np.concatenate([p[:, :3], t[:, None]], axis=1)
             pred_poses.append(p)
@@ -499,24 +480,28 @@ class PoseRunner:
                    pred_poses.reshape(-1, 16),
                    fmt='%.8f', delimiter=' ')
 
-        gt_poses = self.dataset.get_gt_pose()  # 真實位姿
+        gt_poses = self.dataset.get_gt_pose()  # np, [n44]
 
-        # 將預測位姿與真實位姿對齊
         pred_poses = utils.pose_alignment(pred_poses, gt_poses)
 
-        # 計算 ATE (旋轉與平移誤差)
+        # ate
         ate_rots, ate_trans = utils.compute_ATE(gt_poses, pred_poses)
         ate_errs = np.stack([ate_rots, ate_trans], axis=-1)
         ate_errs = np.concatenate([ate_errs, np.mean(ate_errs, axis=0).reshape(-1, 2)], axis=0)
 
-        self.writer.add_scalar('Val/ate_rot', np.mean(ate_errs, axis=0)[0] / np.pi * 180, self.iter_step)
+        self.writer.add_scalar('Val/ate_rot', np.mean(ate_errs, axis=0)[0] / 3.14 * 180, self.iter_step)
         self.writer.add_scalar('Val/ate_trans', np.mean(ate_errs, axis=0)[1], self.iter_step)
-        logging.info(f"Pose validation finished. ATE_rot: {np.mean(ate_errs, axis=0)[0] / np.pi * 180:.4f}, ATE_trans: {np.mean(ate_errs, axis=0)[1]:.4f}")
 
 
+# def train(status_label, case_name):
 def train(case_name):
-    """訓練流程的進入點"""
+    print(torch.__config__)
+    print('Hello Wooden')
+
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+
+    FORMAT = "[%(filename)s:%(lineno)s - %(funcName)20s() ] %(message)s"
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--conf', type=str, default='confs/dtu_sift_porf.conf')
@@ -528,6 +513,7 @@ def train(case_name):
     args = parser.parse_args()
 
     torch.cuda.set_device(args.gpu)
+    # runner = PoseRunner(status_label, args.conf, args.mode, args.case)
     runner = PoseRunner(args.conf, args.mode, args.case)
 
     if args.mode == 'train':
@@ -535,10 +521,19 @@ def train(case_name):
     elif args.mode == 'validate_pose':
         runner.validate_pose()
         
+        
+        
+# idx都是指資料夾中第幾張
+# 改成照db裡的但是是從0到n-1
+# 還有改train的照片idx排列成照newimages
+# python程式都是0到n-1
+# colamp都是1-n
+
+
 if __name__ == "__main__":
-    # 這個區塊似乎是用於測試 trimesh 功能，與主流程無關
     vertices = np.random.rand(100, 3)
     triangles = np.random.randint(0, 100, size=(100, 3))
     vertex_colors = list(np.array([[0.1 + i * 0.005, 0, 0.6 - i * 0.005] for i in range(100)]))
     mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, vertex_colors=vertex_colors)
+    # mesh = trimesh.Trimesh(np.array([[np.random.rand(), np.random.rand(), np.random.rand()] for i in range(100)]), np.array([[np.random.rand(), np.random.rand(), np.random.rand()] for i in range(100)]), vertex_colors=list(np.array([[100.2, 100, 100] for i in range(100)])))
     mesh.export("D:/Desktop/project/exp_dtu/images14/dtu_sift_porf/meshes/test.ply")
