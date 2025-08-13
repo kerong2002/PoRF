@@ -47,7 +47,7 @@ if __name__ == '__main__':
     a = input('處理sparse_interest.ply')
     # 處理sparse_interest.ply
     gen_cameras(work_dir)
-    export_colmap_matches(work_dir)
+    export_colmap_matches(os.path.join(work_dir, 'hloc_glomap_outputs'))
     train(case_name)
             
            

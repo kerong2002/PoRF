@@ -28,7 +28,14 @@ def get_keypoints(cursor, image_id):
 
 def process_one_scene(scene_dir):
 
-    filename_db = Path(scene_dir)/'database.db'
+    # --- 智慧路徑判斷 START ---
+    # 優先嘗試 "前面流程" 的路徑 (資料庫在 parent 目錄)
+    filename_db = Path(scene_dir).parent / 'database.db'
+
+    # 如果找不到，則嘗試 "後面流程" 的路徑 (資料庫在當前目錄)
+    if not filename_db.exists():
+        filename_db = Path(scene_dir) / 'database.db'
+    # --- 智慧路徑判斷 END ---
     outdir = scene_dir/'colmap_matches'
     image = Path(scene_dir).parent/'image'
     print("Opening database: " + str(filename_db))

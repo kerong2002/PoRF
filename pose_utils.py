@@ -74,7 +74,7 @@ def load_colmap_data(realdir):
 
 
 def save_poses(basedir, poses, pts3d, perm):
-    filename_db = os.path.join(basedir, 'hloc_glomap_outputs', 'database.db')
+    filename_db = os.path.join(basedir, 'database.db')
     image = basedir + '/image'
     if not os.path.exists(filename_db):
         print('Error db does not exist!')

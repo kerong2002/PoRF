@@ -32,7 +32,7 @@ def run_hloc_glomap(basedir):
     outputs = Path(basedir) / 'hloc_glomap_outputs'
     outputs.mkdir(exist_ok=True)
     
-    db_path = outputs / 'database.db'
+    db_path = Path(basedir) / 'database.db'
     if db_path.exists():
         db_path.unlink()
 

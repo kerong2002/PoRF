@@ -85,7 +85,7 @@ class FolderSelectorApp:
         noise_cancel(self.work_dir)
         
         gen_cameras(self.work_dir)
-        export_colmap_matches(self.work_dir)
+        export_colmap_matches(os.path.join(self.work_dir, 'hloc_glomap_outputs'))
         # self.status_label.config(text="training status: training")
         # train(self.status_label, self.case_name)
         train(self.case_name)
@@ -128,7 +128,7 @@ class FolderSelectorApp:
             messagebox.showinfo('Notice', 'when the notice is closed, the process will continue\nplease create sparse_points_interest.ply before close this notice')
             
         gen_cameras(self.work_dir)
-        export_colmap_matches(self.work_dir)
+        export_colmap_matches(os.path.join(self.work_dir, 'hloc_glomap_outputs'))
         train(self.case_name)
         
         self.select_button.config(state=tk.NORMAL)
