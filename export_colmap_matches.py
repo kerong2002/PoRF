@@ -1,4 +1,4 @@
-from path import Path
+from pathlib import Path
 import numpy as np
 import sqlite3
 import os
@@ -30,8 +30,8 @@ def process_one_scene(scene_dir):
 
     filename_db = Path(scene_dir)/'database.db'
     outdir = scene_dir/'colmap_matches'
-    image = scene_dir/'image'
-    print("Opening database: " + filename_db)
+    image = Path(scene_dir).parent/'image'
+    print("Opening database: " + str(filename_db))
 
     if not os.path.exists(filename_db):
         print('Error db does not exist!')
@@ -45,8 +45,9 @@ def process_one_scene(scene_dir):
         os.mkdir(outdir)
 
     print(f'Clean old matches in {outdir}')
-    for f in Path(outdir).files('*'):
-        os.remove(f)
+    for f in outdir.glob('*'):
+        if f.is_file():
+            os.remove(f)
 
     connection = sqlite3.connect(filename_db)
     cursor = connection.cursor()
@@ -63,7 +64,7 @@ def process_one_scene(scene_dir):
     # print(Path(image).files('*'))
     exist = [1] * (num_image_ids)
     for i in img_ids_to_names_dict:
-        if os.path.join(image, img_ids_to_names_dict[i]) not in Path(image).files('*'):
+        if not (image / img_ids_to_names_dict[i]).exists():
             # print(os.path.join(image, img_ids_to_names_dict[i]))
             exist[i] = 0
     
@@ -162,7 +163,7 @@ def process_one_scene(scene_dir):
         two_view["src_idx"] = []
         two_view["match"] = []
 
-        files = sorted(outdir.files('{:06d}_*.txt'.format(idx2)))
+        files = sorted(outdir.glob('{:06d}_*.txt'.format(idx2)))
         for f in files:
             j = int(os.path.basename(f)[7:13])
 
