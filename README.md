@@ -1,70 +1,65 @@
-# 3D 重建流程優化專案
+# 3D 重建與姿態優化專案
 
-本專案旨在實現一個高效且高品質的 3D 重建管線，透過深度整合 `hloc` (SuperPoint+SuperGlue) 與 `GloMAP`，為 `porf` 專案提供最優質的相機姿態估計。
+本專案旨在實現一個高效的 3D 重建與相機姿態優化管線。核心是利用 `GloMAP` 的高速全域最佳化能力來改善傳統 `COLMAP` 的 SfM (Structure from Motion) 流程，並結合一個基於 NeRF (神經輻射場) 的模型 (`train.py`) 來進行場景重建與相機姿態的聯合優化。
 
 ---
 
-## 最新流程 (2025-08-13)：hloc + GloMAP 混合式 SfM 管線
+## 核心流程：GloMAP 增強的 SfM 管線
 
-### 核心更新：結合 hloc 的精度與 GloMAP 的速度
+### 概述
 
-為了追求極致的重建品質與效率，我們設計了一套全新的混合式 Structure from Motion (SfM) 管線。此管線取代了原有的 COLMAP 特徵提取與匹配步驟，並保留了 GloMAP 的高速全域最佳化能力。
+為了提升大規模場景下 SfM 的效率與穩健性，本專案採用 `GloMAP` 作為核心的稀疏重建引擎，取代了 `COLMAP` 中較為耗時的 `mapper` 步驟。整個流程由 `glomap_wrapper.py` 進行封裝與自動化。
 
-這個策略旨在結合兩者的最強優勢：
+### 執行步驟詳解
 
--   **hloc (Hierarchical Localization)**:
-    -   **特徵提取 (SuperPoint)**: 利用基於深度學習的 SuperPoint 模型，能夠在各種具挑戰性的場景中（如弱紋理、光照變化、重複圖案）偵測到極其穩健的特徵點。
-    -   **特徵匹配 (SuperGlue)**: 透過圖神經網路 (GNN) 進行特徵匹配，其效果遠優於傳統的最近鄰匹配，能大幅提升匹配的準確性與數量。
+1.  **特徵提取與匹配 (COLMAP)**:
+    -   `colmap feature_extractor`: 首先，利用 COLMAP 強大的特徵提取功能，處理所有輸入影像。
+    -   `colmap exhaustive_matcher`: 接著，進行窮舉匹配，找出影像之間的特徵對應關係。所有特徵和匹配資訊都會儲存在 `database.db` 檔案中。
 
--   **GloMAP**:
-    -   **稀疏重建**: 作為一個專為大規模場景設計的高速全域 SfM 解算器，GloMAP 能快速地根據高品質的匹配資料，完成相機姿態估計和稀疏點雲重建，有效避免了傳統 `colmap mapper` 的效能瓶頸。
+2.  **稀疏重建 (GloMAP)**:
+    -   `glomap mapper`: `GloMAP` 讀取由 COLMAP 產生的 `database.db`，並利用其高效的全域最佳化演算法，快速完成相機姿態估計和稀疏點雲重建。這一步顯著加速了整個 SfM 過程。
 
-### 新的混合管線詳解
+3.  **為後續步驟產生輸出**:
+    -   重建完成後，腳本會自動從資料庫中提取所需的匹配資訊，並產生 `poses.npy` 等檔案，以供姿態優化網路使用。
 
-新的核心邏輯被封裝在 `hloc_glomap_wrapper.py` 中，其執行流程如下：
+---
 
-1.  **影像準備**: 腳本會自動將 `images` 資料夾中的影像複製到 `image` 資料夾，以符合後續流程的格式要求。
+## 關鍵腳本說明
 
-2.  **hloc 特徵提取與匹配**:
-    -   `pairs_from_exhaustive`: 首先，產生一個包含所有影像對的列表。
-    -   `extract_features`: 呼叫 `hloc` 提取所有影像的 SuperPoint 特徵，並儲存為 `.h5` 檔案。
-    -   `match_features`: 根據影像對列表，使用 SuperGlue 進行特徵匹配，並將結果儲存為 `.h5` 檔案。
-
-3.  **資料庫橋接**:
-    -   `colmap feature_extractor`: 我們巧妙地利用此指令來快速建立一個包含所有相機和影像資訊的 `database.db` 檔案。
-    -   **清除 SIFT 特徵**: 為了避免特徵衝突，腳本會**自動清除**上一步產生的預設 SIFT 特徵。
-    -   `import_features` & `import_matches`: 將 `hloc` 產生的 SuperPoint 特徵和 SuperGlue 匹配結果，匯入到這個乾淨的 `database.db` 中。這一步是連接 `hloc` 和 `GloMAP` 的關鍵橋樑。
-
-4.  **GloMAP 稀疏重建**:
-    -   `glomap mapper`: `GloMAP` 讀取這個包含了高品質匹配的資料庫，並快速執行全域最佳化，完成稀疏重建。重建結果（`cameras.bin`, `images.bin`, `points3D.bin`）會儲存在 `sparse/0` 資料夾中。
-
-5.  **為 porf 產生輸出**:
-    -   `export_colmap_matches`: 在重建完成後，腳本會自動呼叫此函式，從資料庫中提取匹配資訊，並產生 `porf` 所需的 `colmap_matches` 資料夾和 `.npz` 檔案。
-    -   `save_poses`: 最後，[`pose_utils.py`](pose_utils.py:) 會讀取重建結果，並產生 `poses.npy` 和 `sparse_points.ply` 點雲檔案。
-
-### 帶來的優勢
-
--   **極高的重建品質**：SuperPoint+SuperGlue 的組合在準確性和穩健性上均顯著優於傳統方法。
--   **維持高速重建**：繼續利用 GloMAP 的速度優勢，實現快速的全域最佳化。
--   **全自動化與無縫整合**：整個複雜的流程被完整封裝，使用者只需執行一個指令即可完成所有操作，並得到 `porf` 所需的全部檔案。
+-   `glomap_wrapper.py`: 自動化 SfM 流程的總控制器。它負責依序呼叫 `COLMAP` 和 `GloMAP`，並處理它們之間的資料傳遞。
+-   `train.py`: 姿態優化與場景重建的核心。它會載入由 SfM 產生的初始相機姿態，並在一個端到端的框架中，同時優化相機姿態 (Pose) 和場景的幾何表示 (NeRF)。
+-   `utils.py`: 包含專案所需的各種輔助函式，例如姿態計算、資料處理等。
 
 ---
 
 ## 如何執行
 
-整個 SfM 流程已經被整合到 `imgs2poses.py` 中。您可以透過執行 `surface.py` 或直接執行 `imgs2poses.py` 來啟動。
+### 1. 啟動應用程式
+
+整個流程可以透過一個簡單的圖形化介面 (GUI) 啟動。
 
 ```bash
-# 建議的執行方式 (透過 GUI)
 python surface.py
-
-# 或直接執行 (指定工作目錄)
-python imgs2poses.py --work_dir path/to/your/dataset
 ```
-```commandline
+
+### 2. 監控訓練過程
+
+您可以使用兩種工具來視覺化和監控訓練的進度：
+
+#### TensorBoard (本地監控)
+
+用於查看損失函數曲線、PSNR 等指標。
+
+```bash
 tensorboard --logdir exp_dtu\scan24\dtu_sift_porf\pose_logs
 ```
+*請將 `exp_dtu\scan24\dtu_sift_porf` 替換為您實際的實驗輸出路徑。*
 
--   `--work_dir`: 指向您的資料集路徑，該路徑下應包含一個名為 `images` 的資料夾。
+#### Weights & Biases (雲端儀表板)
 
-執行完成後，所有中間檔案會儲存在 `hloc_glomap_outputs` 資料夾中，而最終的稀疏重建結果會像以前一樣，儲存在 `sparse` 資料夾內，以供 `porf` 的後續步驟使用。
+提供更強大的實驗追蹤、比較與視覺化功能。您可以在訓練開始後，從終端機的輸出中找到對應的 `wandb` 專案連結，並在瀏覽器中打開。
+
+-   **優點**:
+    -   雲端儲存，隨時隨地存取。
+    -   可輕鬆比較不同實驗的結果。
+    -   除了指標曲線，還可以視覺化 3D 點雲、渲染影像等。
