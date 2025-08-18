@@ -7,8 +7,8 @@ import sys
 import os
 from glob import glob
 
-# if __name__ == "__main__":
-#     work_dir = os.path.join(Path('porf_data/dtu'), "gun6")
+# # if __name__ == "__main__":
+# #     work_dir = os.path.join(Path('porf_data/dtu'), "gun6")
 def gen_cameras(work_dir):
     poses_hwf = np.load(os.path.join(work_dir, 'poses.npy')) # n_images, 3, 5
     poses_raw = poses_hwf[:, :, :4]

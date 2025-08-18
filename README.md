@@ -61,6 +61,9 @@ python surface.py
 # 或直接執行 (指定工作目錄)
 python imgs2poses.py --work_dir path/to/your/dataset
 ```
+```commandline
+tensorboard --logdir exp_dtu\scan24\dtu_sift_porf\pose_logs
+```
 
 -   `--work_dir`: 指向您的資料集路徑，該路徑下應包含一個名為 `images` 的資料夾。
 

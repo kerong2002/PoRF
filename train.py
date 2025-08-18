@@ -422,9 +422,6 @@ class PoseRunner:
         normals2 = trimesh.Trimesh(vertices, triangles).vertex_normals
         if normals2.shape == vertices.shape:
             with torch.no_grad():
-                # 確保 normals2 和 pts 的數量一致，避免張量大小不匹配
-                if normals2.shape[0] > pts.shape[0]:
-                    normals2 = normals2[:pts.shape[0]]
                 sampled_color4 = self.render_network(pts,
                                             gradients,
                                             torch.tensor(normals2.copy()).to(torch.float32),

@@ -41,6 +41,15 @@ class FolderSelectorApp:
         self.text_entry.pack(pady=5)
         self.text_entry.config(state=tk.NORMAL)
         
+        # Reconstruction technology selection
+        self.recon_tech_label = tk.Label(root, text="Select reconstruction technology:")
+        self.recon_tech_label.pack(pady=5)
+        self.recon_tech = tk.StringVar(value="colmap")
+        self.colmap_radio = tk.Radiobutton(root, text="COLMAP", variable=self.recon_tech, value="colmap")
+        self.colmap_radio.pack(pady=2)
+        self.glomap_radio = tk.Radiobutton(root, text="GloMAP", variable=self.recon_tech, value="glomap")
+        self.glomap_radio.pack(pady=2)
+
         # Button to Auto Generate sparse_points_interest.ply
         self.generate_auto_button = tk.Button(root, text="Auto Generate sparse_points_interest.ply", command=self.start_auto)
         self.generate_auto_button.pack(pady=10)
@@ -85,7 +94,7 @@ class FolderSelectorApp:
         noise_cancel(self.work_dir)
         
         gen_cameras(self.work_dir)
-        export_colmap_matches(os.path.join(self.work_dir, 'hloc_glomap_outputs'))
+        export_colmap_matches(self.work_dir)
         # self.status_label.config(text="training status: training")
         # train(self.status_label, self.case_name)
         train(self.case_name)
@@ -128,7 +137,7 @@ class FolderSelectorApp:
             messagebox.showinfo('Notice', 'when the notice is closed, the process will continue\nplease create sparse_points_interest.ply before close this notice')
             
         gen_cameras(self.work_dir)
-        export_colmap_matches(os.path.join(self.work_dir, 'hloc_glomap_outputs'))
+        export_colmap_matches(self.work_dir)
         train(self.case_name)
         
         self.select_button.config(state=tk.NORMAL)
@@ -172,6 +181,14 @@ class FolderSelectorApp:
 
         # self.status_label.config(text="training status: generating poses")
         
+        tech = self.recon_tech.get()
+        if tech == "colmap":
+            from colmap_wrapper import run_colmap
+            run_colmap(self.work_dir, 'exhaustive_matcher')
+        else:
+            from glomap_wrapper import run_glomap
+            run_glomap(self.work_dir, 'exhaustive_matcher')
+
         num_used_image = imgs2poses(self.work_dir)
         
         # self.image_status_label.config(text=f"image use: {num_used_image}/{len(os.listdir(self.image_dir))}")

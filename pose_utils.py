@@ -9,7 +9,7 @@ import imageio
 import skimage.transform
 import trimesh
 
-from hloc_glomap_wrapper import run_hloc_glomap
+from glomap_wrapper import run_glomap
 import colmap_read_model as read_model
 
 
@@ -35,6 +35,16 @@ def load_colmap_data(realdir):
     
     names = [imdata[k].name for k in imdata]
     
+    image_dir = os.path.join(realdir, 'images')
+    new_image_dir = os.path.join(realdir, 'image')
+    os.makedirs(new_image_dir, exist_ok=True)
+    
+    for filename in names:
+        img_path = os.path.join(image_dir, filename)
+        img = Image.open(img_path)
+        
+        output_path = os.path.join(new_image_dir, filename)
+        img.save(output_path)
         
     # print(names)
     for i in np.argsort(names):
@@ -74,7 +84,7 @@ def load_colmap_data(realdir):
 
 
 def save_poses(basedir, poses, pts3d, perm):
-    filename_db = os.path.join(basedir, 'database.db')
+    filename_db = basedir + '/database.db'
     image = basedir + '/image'
     if not os.path.exists(filename_db):
         print('Error db does not exist!')
@@ -96,16 +106,16 @@ def save_poses(basedir, poses, pts3d, perm):
     
     exist = [1] * (num_image_ids)
     for i in img_ids_to_names_dict:
-        if not (Path(image) / img_ids_to_names_dict[i]).exists():
+        if os.path.join(image, img_ids_to_names_dict[i]) not in Path(image).files('*'):
             # print(os.path.join(image, img_ids_to_names_dict[i]))
             exist[i] = 0
             
-    minus = [0] * (num_image_ids)
+    minus = [0] * (num_image_ids)    
     for j, x in enumerate(exist):
         if not x:
             for i in range(j, num_image_ids):
-                minus[i] += 1
-    print(exist, minus)
+                minus[i] += 1 
+    print(exist, minus)  
     
     
     pts_arr = []
@@ -124,13 +134,9 @@ def save_poses(basedir, poses, pts3d, perm):
             cams[ind - minus[ind - 1] - 1] = 1
         vis_arr.append(cams)
 
-    if pts_arr:
-        pts = np.stack(pts_arr, axis=0)
-        pcd = trimesh.PointCloud(pts)
-        pcd.export(os.path.join(basedir, 'sparse_points.ply'))
-        print(f'Saved {len(pts_arr)} points to sparse_points.ply')
-    else:
-        print('No 3D points found to save.')
+    pts = np.stack(pts_arr, axis=0)
+    pcd = trimesh.PointCloud(pts)
+    pcd.export(os.path.join(basedir, 'sparse_points.ply'))
 
     pts_arr = np.array(pts_arr)
     vis_arr = np.array(vis_arr)
@@ -315,10 +321,10 @@ def gen_poses(basedir, match_type, factors=None):
     else:
         files_had = []
     if not all([f in files_had for f in files_needed]):
-        print( 'Need to run hloc+glomap pipeline' )
-        run_hloc_glomap(basedir)
+        print( 'Need to run GLOMAP' )
+        run_glomap(basedir, match_type)
     else:
-        print('Don\'t need to run SfM')
+        print('Don\'t need to run GLOMAP')
         
     print('Post-colmap')
     

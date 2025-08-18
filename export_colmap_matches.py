@@ -37,7 +37,9 @@ def process_one_scene(scene_dir):
         filename_db = Path(scene_dir) / 'database.db'
     # --- 智慧路徑判斷 END ---
     outdir = scene_dir/'colmap_matches'
-    image = Path(scene_dir).parent/'image'
+    image = Path(scene_dir) / 'images' # 優先嘗試 'images'
+    if not image.exists():
+        image = Path(scene_dir) / 'image' # 若 'images' 不存在，則嘗試 'image'
     print("Opening database: " + str(filename_db))
 
     if not os.path.exists(filename_db):

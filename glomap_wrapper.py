@@ -81,21 +81,21 @@ def run_glomap(basedir, match_type):
     print(f'\nFinished running GloMAP, see {logfile_name} for logs.')
 
 
-if __name__ == "__main__":
-    # 使用範例：
-    # 您需要提供一個基礎目錄 (basedir)，其中應包含一個名為 'images' 的子資料夾
-    # 例如： python your_script_name.py --basedir /path/to/your/dataset --matcher exhaustive_matcher
-
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Run the GloMAP sparse reconstruction pipeline.")
-    parser.add_argument("--basedir", default="Dataset/scan24",  help="Path to the base directory containing the 'images' folder.")
-    parser.add_argument("--matcher", default="exhaustive_matcher", choices=["exhaustive_matcher", "sequential_matcher"],
-                        help="Feature matcher to use.")
-
-    args = parser.parse_args()
-
-    if not os.path.isdir(os.path.join(args.basedir, 'images')):
-        print(f"Error: 'images' folder not found in {args.basedir}")
-    else:
-        run_glomap(args.basedir, args.matcher)
+# if __name__ == "__main__":
+#     # 使用範例：
+#     # 您需要提供一個基礎目錄 (basedir)，其中應包含一個名為 'images' 的子資料夾
+#     # 例如： python your_script_name.py --basedir /path/to/your/dataset --matcher exhaustive_matcher
+#
+#     import argparse
+#
+#     parser = argparse.ArgumentParser(description="Run the GloMAP sparse reconstruction pipeline.")
+#     parser.add_argument("--basedir", default="Dataset/scan24",  help="Path to the base directory containing the 'images' folder.")
+#     parser.add_argument("--matcher", default="exhaustive_matcher", choices=["exhaustive_matcher", "sequential_matcher"],
+#                         help="Feature matcher to use.")
+#
+#     args = parser.parse_args()
+#
+#     if not os.path.isdir(os.path.join(args.basedir, 'images')):
+#         print(f"Error: 'images' folder not found in {args.basedir}")
+#     else:
+#         run_glomap(args.basedir, args.matcher)
