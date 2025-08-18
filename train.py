@@ -379,14 +379,14 @@ class PoseRunner:
                           self.dataset.scale_mats_np[0][:3, 3][None]
 
         mesh = trimesh.Trimesh(vertices_w, triangles)
-        mesh_path = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step))
+        mesh_path = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.obj'.format(self.iter_step))
         mesh.export(mesh_path)
-
+ 
         mesh2 = trimesh.Trimesh(vertices_w2, triangles2)
-        mesh2_path = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}2.ply'.format(self.iter_step))
+        mesh2_path = os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}2.obj'.format(self.iter_step))
         mesh2.export(mesh2_path)
-
-        # 將產生的 3D 模型 (.ply) 上傳到 wandb
+ 
+        # 將產生的 3D 模型 (.obj) 上傳到 wandb
         if WANDB_AVAILABLE:
             wandb.log({"Mesh/geometry": wandb.Object3D(mesh_path)}, step=self.iter_step)
             wandb.log({"Mesh/geometry2": wandb.Object3D(mesh2_path)}, step=self.iter_step)
