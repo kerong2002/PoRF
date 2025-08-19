@@ -36,7 +36,7 @@ class PoseRunner:
 
         # --- 1. 讀取與設定配置 ---
         self.conf_path = conf_path
-        f = open(self.conf_path)
+        f = open(self.conf_path, encoding='utf-8')
         conf_text = f.read()
         # 將設定檔中的 'CASE_NAME' 佔位符替換為實際的案例名稱
         conf_text = conf_text.replace('CASE_NAME', case)
@@ -183,12 +183,19 @@ class PoseRunner:
             background_rgb = torch.ones([1, 3]) if self.use_white_bkgd else None
 
             # 執行 NeuS 的體渲染過程
+            # --- ★ 修改 START ---
+            # 這裡我們直接使用 get_cos_anneal_ratio() 來獲取訓練進度
+            # 這個函數本身就是從 0 到 1 線性增長的
+            current_progress = self.get_cos_anneal_ratio()
+
             render_out = self.renderer.render(rays_o,
                                               rays_d,
                                               near,
                                               far,
                                               background_rgb=background_rgb,
-                                              cos_anneal_ratio=self.get_cos_anneal_ratio())
+                                              # 將進度傳遞給 renderer
+                                              cos_anneal_ratio=current_progress)
+            # --- ★ 修改 END ---
 
             # 從渲染結果中提取各項數值
             color = render_out['color']  # 渲染出的顏色
@@ -456,7 +463,7 @@ def train(case_name):
     logging.basicConfig(level=logging.DEBUG, format=FORMAT)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--conf', type=str, default='confs/dtu_sift_porf.conf')
+    parser.add_argument('--conf', type=str, default='confs/dtu_sift_porf_high_psnr.conf')
     parser.add_argument('--mode', type=str, default='train')
     parser.add_argument('--mcube_threshold', type=float, default=0.0)
     parser.add_argument('--gpu', type=int, default=0)

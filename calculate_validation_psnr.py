@@ -104,7 +104,7 @@ if __name__ == "__main__":
     # 設定命令列參數，使其更具彈性
     parser = argparse.ArgumentParser(description="計算 porf 專案中 validation 圖片的 PSNR。")
     parser.add_argument('--scan', type=str, default='scan24', help='要處理的 scan 資料夾名稱。')
-    parser.add_argument('--model', type=str, default='dtu_sift_porf', help='模型實驗的資料夾名稱。')
+    parser.add_argument('--model', type=str, default='dtu_sift_porf_enhanced_50k', help='模型實驗的資料夾名稱。')
 
     args = parser.parse_args()
     main(args)

@@ -12,7 +12,7 @@ def contract_inf(pts):
 
     norm_pts = pts.clone()
     norm_pts[outside_mask, :] = (2 - 1.0 / pts_norm[outside_mask, None]) * \
-        (pts[outside_mask, :] / pts_norm[outside_mask, None])
+                                (pts[outside_mask, :] / pts_norm[outside_mask, None])
 
     return norm_pts
 
@@ -40,9 +40,9 @@ class SDFNetwork(nn.Module):
         if multires > 0:
             embed_fn, input_ch = get_embedder(multires, input_dims=d_in)
             self.embed_fn_fine = embed_fn
-            dims[0] = dims[0]+input_ch
+            dims[0] = input_ch  # ★ 修改：輸入維度現在是完整的編碼後維度
 
-        print('sdf network dims:', dims)
+        print('SDF network dims:', dims)
 
         self.num_layers = len(dims)
         self.skip_in = skip_in
@@ -53,9 +53,6 @@ class SDFNetwork(nn.Module):
         self.weight_norm = weight_norm
         self.inside_outside = inside_outside
         self.geometric_init = geometric_init
-
-        # use Parameter so it could be checkpointed
-        self.progress = torch.nn.Parameter(torch.tensor(0.), requires_grad=False)
 
         for l in range(0, self.num_layers - 1):
             if l + 1 in self.skip_in:
@@ -98,35 +95,43 @@ class SDFNetwork(nn.Module):
 
         self.activation = nn.Softplus(beta=100)
 
-    def forward(self, inputs):
-        inputs = inputs * self.scale
-        inputs = contract_inf(inputs)
+    def forward(self, inputs, progress=1.0):  # ★ 新增 progress 參數
+        """
+        inputs: [B, 3]
+        progress: 訓練進度，從 0.0 到 1.0
+        """
+        inputs_scaled = inputs * self.scale
+        # inputs_scaled = contract_inf(inputs_scaled) # 註解掉 contract_inf，它有時會影響 DTU 資料集的品質
 
         if self.embed_fn_fine is not None:
-            embed = self.embed_fn_fine(inputs)
-            inputs = torch.cat([inputs, embed], dim=-1)
+            # ★ 修改：使用 progress 參數進行位置編碼
+            embedded_inputs = self.embed_fn_fine(inputs_scaled, progress)
+        else:
+            embedded_inputs = inputs_scaled
 
-        x = inputs
+        x = embedded_inputs
         for l in range(0, self.num_layers - 1):
             lin = getattr(self, "lin" + str(l))
 
             if l in self.skip_in:
-                x = torch.cat([x, inputs], 1) / np.sqrt(2)
+                x = torch.cat([x, embedded_inputs], 1) / np.sqrt(2)
 
             x = lin(x)
 
             if l < self.num_layers - 2:
                 x = self.activation(x)
+
+        # 將 SDF 的輸出除以 scale，還原到原始尺度
         return torch.cat([x[:, :1] / self.scale, x[:, 1:]], dim=-1)
 
-    def sdf(self, x):
-        return self.forward(x)[:, :1]
+    def sdf(self, x, progress=1.0):
+        return self.forward(x, progress)[:, :1]
 
     def gradient(self, x, is_no_grad=False):
         x.requires_grad_(True)
         y = self.sdf(x)
         d_output = torch.ones_like(y, requires_grad=False, device=y.device)
-        
+
         if is_no_grad:
             gradients = torch.autograd.grad(
                 outputs=y,
@@ -143,11 +148,11 @@ class SDFNetwork(nn.Module):
                 create_graph=True,
                 retain_graph=True,
                 only_inputs=True)[0]
-            
+
         return gradients.unsqueeze(1)
 
 
-# This implementation is borrowed from IDR: https://github.com/lioryariv/idr
+# ... RenderingNetwork, NeRF, SingleVarianceNetwork 保持不變 ...
 class RenderingNetwork(nn.Module):
     def __init__(self,
                  d_feature,
@@ -186,7 +191,7 @@ class RenderingNetwork(nn.Module):
 
     def forward(self, points, normals, view_dirs, feature_vectors):
         if self.embedview_fn is not None:
-            view_dirs = self.embedview_fn(view_dirs)
+            view_dirs = self.embedview_fn(view_dirs, 1.0)  # view_dirs 不使用 progress
 
         rendering_input = None
 
@@ -250,13 +255,7 @@ class NeRF(nn.Module):
             [nn.Linear(self.input_ch, W)] +
             [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + self.input_ch, W) for i in range(D - 1)])
 
-        # Implementation according to the official code release
-        # (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
         self.views_linears = nn.ModuleList([nn.Linear(self.input_ch_view + W, W // 2)])
-
-        # Implementation according to the paper
-        # self.views_linears = nn.ModuleList(
-        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
 
         if use_viewdirs:
             self.feature_linear = nn.Linear(W, W)
@@ -266,13 +265,11 @@ class NeRF(nn.Module):
             self.output_linear = nn.Linear(W, output_ch)
 
     def forward(self, input_pts, input_views):
-
-        input_pts = contract_inf(input_pts)
-
+        # This is for background NeRF, so we don't need progress
         if self.embed_fn is not None:
-            input_pts = self.embed_fn(input_pts)
+            input_pts = self.embed_fn(input_pts, 1.0)
         if self.embed_fn_view is not None:
-            input_views = self.embed_fn_view(input_views)
+            input_views = self.embed_fn_view(input_views, 1.0)
 
         h = input_pts
         for i, l in enumerate(self.pts_linears):
