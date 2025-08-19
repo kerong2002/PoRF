@@ -75,3 +75,123 @@ tensorboard --logdir exp_dtu\scan24\dtu_sift_porf\pose_logs
     -   雲端儲存，隨時隨地存取。
     -   可輕鬆比較不同實驗的結果。
     -   除了指標曲線，還可以視覺化 3D 點雲、渲染影像等。
+---
+
+## 4. 核心修改部分詳解
+
+### 4.1. `embedder.py`：策略的最終執行者
+最關鍵的邏輯發生在 **PositionalEncoder** 類別中，我們修改了其 `forward` 方法，使其能根據訓練進度動態地遮蔽高頻的位置編碼。
+
+- **新增 progress 參數**：`forward` 函式新增了一個 `progress` 參數（值域 0.0 到 1.0），用以接收當前的訓練進度。
+- **動態頻率遮罩 (Dynamic Frequency Masking)**：
+  - 計算 Alpha 值：`alpha = self.kwargs['num_freqs'] * progress`
+  - 計算權重：隨訓練進度逐步開啟高頻細節。
+  - 應用權重：將權重乘上 sin/cos 編碼值以控制高頻資訊。
+
+程式碼示例：
+```python
+class PositionalEncoder(nn.Module):
+    def forward(self, inputs, progress=1.0):
+        alpha = self.kwargs['num_freqs'] * progress
+        outputs = []
+        if self.kwargs['include_input']:
+            outputs.append(self.embed_fns[0](inputs))
+            start_idx = 1
+        else:
+            start_idx = 0
+
+        for i in range(start_idx, len(self.embed_fns), 2):
+            freq_idx = (i - start_idx) // 2
+            alpha_minus_freq = torch.tensor(alpha - freq_idx, device=inputs.device)
+            one_tensor = torch.tensor(1.0, device=inputs.device)
+            weight = torch.clamp(torch.min(alpha_minus_freq, one_tensor), 0.0)
+            sin_val = self.embed_fns[i](inputs)
+            cos_val = self.embed_fns[i + 1](inputs)
+            outputs.append(weight * sin_val)
+            outputs.append(weight * cos_val)
+
+        return torch.cat(outputs, -1)
+```
+
+---
+
+### 4.2. `fields.py`：參數的中間傳遞者
+**SDFNetwork** 負責學習場景幾何，我們修改它作為 `progress` 參數的傳遞橋樑。
+
+- 在 `forward` 與 `sdf` 方法中新增 `progress` 參數。
+- 呼叫位置編碼器時傳遞進 `progress`，確保整體遵循由粗到精的學習策略。
+
+程式碼示例：
+```python
+class SDFNetwork(nn.Module):
+    def forward(self, inputs, progress=1.0):
+        inputs_scaled = inputs * self.scale
+        if self.embed_fn_fine is not None:
+            embedded_inputs = self.embed_fn_fine(inputs_scaled, progress)
+        else:
+            embedded_inputs = inputs_scaled
+        x = embedded_inputs
+        return torch.cat([x[:, :1] / self.scale, x[:, 1:]], dim=-1)
+
+    def sdf(self, x, progress=1.0):
+        return self.forward(x, progress)[:, :1]
+```
+
+---
+
+### 4.3. `renderer.py`：策略的發起者
+**NeuSRenderer** 作為渲染流程的總指揮，新增了 `cos_anneal_ratio` 參數來驅動整個 coarse-to-fine 機制。
+
+- 在 `render` 與 `render_core` 方法中新增 `cos_anneal_ratio`。
+- 將其作為 `progress` 傳遞給 `SDFNetwork`。
+
+程式碼示例：
+```python
+class NeuSRenderer:
+    def render_core(self, rays_o, rays_d, z_vals, sample_dist, near, far,
+                    background_rgb=None, cos_anneal_ratio=0.0):
+        progress = cos_anneal_ratio
+        sdf_nn_output = self.sdf_network(pts, progress=progress)
+        return { ... }
+
+    def render(self, rays_o, rays_d, near, far, perturb_overwrite=-1,
+               background_rgb=None, cos_anneal_ratio=0.0):
+        sdf = self.sdf_network.sdf(pts.reshape(-1, 3), progress=cos_anneal_ratio)
+        render_core_out = self.render_core(rays_o, rays_d, z_vals, sample_dist, near, far,
+                                           background_rgb=background_rgb,
+                                           cos_anneal_ratio=cos_anneal_ratio)
+        return { ... }
+```
+
+---
+
+### 4.4. 由設定檔驅動的增強
+對應的 `dtu_sift_porf_high_psnr.conf` 設定檔調整：
+
+- 增加模型容量 (`n_layers`, `d_hidden`)
+- 增加光線採樣數 (`n_samples`, `n_importance`)
+- 啟用高頻位置編碼 (`multires = 10`)
+
+設定檔示例：
+```conf
+model {
+    sdf_network {
+        d_hidden = 256
+        n_layers = 8
+        multires = 10
+    }
+    render_network {
+        d_hidden = 256
+        n_layers = 4
+    }
+    neus_renderer {
+        n_samples = 128
+        n_importance = 128
+    }
+}
+```
+
+---
+
+### 4.5. 總結
+本次改動實現了一個動態的「由粗到精」學習機制，並透過設定檔提升了模型容量與渲染精度。兩者相輔相成，使模型能在訓練初期建立穩定幾何，後期專注於學習細節，最終在速度與品質上雙重超越。
