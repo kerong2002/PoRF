@@ -127,27 +127,29 @@ class SDFNetwork(nn.Module):
     def sdf(self, x, progress=1.0):
         return self.forward(x, progress)[:, :1]
 
+    # ★ 修正後的程式碼
     def gradient(self, x, is_no_grad=False):
-        x.requires_grad_(True)
-        y = self.sdf(x)
-        d_output = torch.ones_like(y, requires_grad=False, device=y.device)
+        with torch.enable_grad():  # ★ 修正：將整個函式包起來，強制啟用梯度
+            x.requires_grad_(True)
+            y = self.sdf(x)
+            d_output = torch.ones_like(y, requires_grad=False, device=y.device)
 
-        if is_no_grad:
-            gradients = torch.autograd.grad(
-                outputs=y,
-                inputs=x,
-                grad_outputs=d_output,
-                create_graph=False,
-                retain_graph=False,
-                only_inputs=True)[0]
-        else:
-            gradients = torch.autograd.grad(
-                outputs=y,
-                inputs=x,
-                grad_outputs=d_output,
-                create_graph=True,
-                retain_graph=True,
-                only_inputs=True)[0]
+            if is_no_grad:
+                gradients = torch.autograd.grad(
+                    outputs=y,
+                    inputs=x,
+                    grad_outputs=d_output,
+                    create_graph=False,
+                    retain_graph=False,
+                    only_inputs=True)[0]
+            else:
+                gradients = torch.autograd.grad(
+                    outputs=y,
+                    inputs=x,
+                    grad_outputs=d_output,
+                    create_graph=True,
+                    retain_graph=True,
+                    only_inputs=True)[0]
 
         return gradients.unsqueeze(1)
 
