@@ -1,0 +1,43 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{caption}
+
+\begin{document}
+
+\begin{table}[h!]
+    \centering
+    \captionsetup{justification=centering}
+    \caption{Key hyperparameters for the \textbf{baseline model} (COLMAP).}
+    \label{tab:hyperparams_baseline}
+    \begin{tabular}{llrl}
+        \toprule
+        \textbf{Section} & \textbf{Parameter} & \textbf{Value} & \textbf{Description} \\
+        \midrule
+        \multicolumn{4}{l}{\textit{\textbf{Training}}} \\
+        & \texttt{learning\_rate} & 1e-3 & Initial learning rate for networks. \\
+        & \texttt{use\_porf} & True & Enables the Pose Refinement (PORF) module. \\
+        & \texttt{pose\_learning\_rate} & 1e-3 & Learning rate for camera pose refinement. \\
+        & \texttt{batch\_size} & 512 & Number of rays per training batch. \\
+        \midrule
+        \multicolumn{4}{l}{\textit{\textbf{Loss Weights}}} \\
+        & \texttt{igr\_weight} & 0.1 & Weight for the Eikonal loss (IGR). \\
+        & \texttt{color\_loss\_weight} & 1.0 & Weight for photometric color loss. \\
+        & \texttt{epipolar\_loss\_weight} & 0.1 & Weight for the epipolar geometry loss. \\
+        \midrule
+        \multicolumn{4}{l}{\textit{\textbf{Model (SDF Network)}}} \\
+        & \texttt{n\_layers} & 8 & Number of layers in the SDF MLP. \\
+        & \texttt{d\_hidden} & 256 & Hidden dimension of the SDF MLP. \\
+        & \texttt{multires} & 6 & Frequencies for positional encoding. \\
+        \midrule
+        \multicolumn{4}{l}{\textit{\textbf{Model (Radiance Network)}}} \\
+        & \texttt{n\_layers} & 4 & Number of layers in the radiance MLP. \\
+        & \texttt{multires\_view} & 4 & Frequencies for view direction encoding. \\
+        \midrule
+        \multicolumn{4}{l}{\textit{\textbf{Model (Renderer)}}} \\
+        & \texttt{n\_samples} & 64 & Number of coarse samples per ray. \\
+        & \texttt{n\_importance} & 64 & Number of fine samples per ray. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\end{document}
